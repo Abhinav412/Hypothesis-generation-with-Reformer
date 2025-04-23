@@ -1,0 +1,5 @@
+gradio
+transformers
+datasets
+arxiv
+grobid-client-python
