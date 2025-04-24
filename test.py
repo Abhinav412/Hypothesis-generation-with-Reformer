@@ -3,6 +3,8 @@ import arxiv, torch, requests, os, hashlib
 from grobid_client.grobid_client import GrobidClient
 from bs4 import BeautifulSoup
 import gradio as gr
+import tempfile
+import shutil
 
 # Load models and tokenizers once
 tokenizer = AutoTokenizer.from_pretrained("google/bigbird-pegasus-large-arxiv")
@@ -11,12 +13,18 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 hypo_model = AutoModelForSeq2SeqLM.from_pretrained("pszemraj/long-t5-tglobal-base-sci-simplify").to(device)
 hypo_tokenizer = AutoTokenizer.from_pretrained("pszemraj/long-t5-tglobal-base-sci-simplify", legacy=False)
 
-# GROBID Processing
 def grobid_extract(pdf_path, output_dir="./grobid_out"):
     os.makedirs(output_dir, exist_ok=True)
-    client = GrobidClient(config_path=None)
+    client = GrobidClient(config_path="config.json")
     client.process("processFulltextDocument", pdf_path, output=output_dir, consolidate_header=True)
-    tei_path = os.path.join(output_dir, os.path.basename(pdf_path).replace(".pdf", ".tei.xml"))
+
+    tei_files = [f for f in os.listdir(output_dir) if f.endswith(".tei.xml")]
+    if not tei_files:
+        raise FileNotFoundError(f"No TEI XML file found in {output_dir}")
+
+    tei_files.sort(key=lambda f: os.path.getmtime(os.path.join(output_dir, f)), reverse=True)
+    tei_path = os.path.join(output_dir, tei_files[0])
+
     with open(tei_path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -32,12 +40,14 @@ def extract_sections_from_tei(tei_xml):
     return {"title": title, "abstract": abstract, "fulltext": fulltext}
 
 def extract_pdf_with_grobid(pdf_url, filename="temp.pdf"):
-    response = requests.get(pdf_url)
-    if response.status_code != 200:
-        raise Exception("Failed to fetch PDF from ArXiv.")
-    with open(filename, 'wb') as f:
-        f.write(response.content)
-    tei = grobid_extract(filename)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        response = requests.get(pdf_url)
+        if response.status_code != 200:
+            raise Exception("Failed to fetch PDF from ArXiv.")
+        tmp_file.write(response.content)
+        tmp_pdf_path = tmp_file.name
+    
+    tei = grobid_extract(tmp_pdf_path)
     return extract_sections_from_tei(tei)
 
 # NLP Functions
@@ -85,7 +95,7 @@ def pipeline(query, n_hypotheses=3):
         return f"Error: {str(e)}", "", "", ""
 
 # Gradio Interface
-gr.Interface(
+demo = gr.Interface(
     fn=pipeline,
     inputs=[
         gr.Textbox(placeholder="Enter an AI research topic...", label="Search Query"),
@@ -99,4 +109,5 @@ gr.Interface(
     ],
     title="Scientific Hypothesis Generator",
     description="Searches ArXiv, parses the paper with GROBID, summarizes it, and generates novel hypotheses."
-).launch()
+)
+demo.launch()
